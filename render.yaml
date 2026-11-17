@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: kickafk-studio
+    runtime: docker
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_URL
+        sync: false
+      - key: KICK_CLIENT_ID
+        sync: false
+      - key: KICK_CLIENT_SECRET
+        sync: false

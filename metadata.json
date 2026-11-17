@@ -1,0 +1,6 @@
+{
+  "name": "KickAFK Studio",
+  "description": "Bot de automação AFK para acompanhar, alternar e transmitir lives na Kick com login oficial OAuth 2.1.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
