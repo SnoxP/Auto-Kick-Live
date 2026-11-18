@@ -15,6 +15,7 @@ interface TopBarProps {
 const TAB_TITLES: Record<NavTab, string> = {
   watcher: 'Bot Watcher AFK',
   discover: 'Descobrir Lives',
+  drops: 'Eventos da Plataforma e Drops',
   broadcaster: 'Transmissor 24/7 AFK',
   history: 'Histórico e Eventos',
 };

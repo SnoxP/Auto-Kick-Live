@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { BroadcasterView } from './components/BroadcasterView';
 import { DiscoverView } from './components/DiscoverView';
+import { DropsEventsView } from './components/DropsEventsView';
 import { HistoryView } from './components/HistoryView';
 import { KickLoginModal } from './components/KickLoginModal';
 import { Sidebar } from './components/Sidebar';
@@ -167,6 +168,48 @@ export default function App() {
     await fetchState();
   };
 
+  const handleRefreshEvents = async () => {
+    const res = await fetch('/api/events/refresh', { method: 'POST' });
+    const data = (await res.json()) as { error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || 'Erro ao atualizar eventos da Kick.');
+    }
+    await fetchState();
+  };
+
+  const handleEnqueueEvent = async (eventId: string, slug?: string) => {
+    const res = await fetch(`/api/events/${encodeURIComponent(eventId)}/enqueue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug }),
+    });
+    const data = (await res.json()) as { error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || 'Erro ao sintonizar canal do evento.');
+    }
+    await fetchState();
+  };
+
+  const handleRefreshDrops = async () => {
+    const res = await fetch('/api/drops/refresh', { method: 'POST' });
+    const data = (await res.json()) as { error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || 'Erro ao atualizar campanhas.');
+    }
+    await fetchState();
+  };
+
+  const handleEnqueueCampaign = async (campaignId: string) => {
+    const res = await fetch(`/api/drops/${encodeURIComponent(campaignId)}/enqueue`, {
+      method: 'POST',
+    });
+    const data = (await res.json()) as { error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || 'Erro ao sintonizar canal da campanha.');
+    }
+    await fetchState();
+  };
+
   return (
     <div className="min-h-screen bg-[#0B0E11] text-[#F1F5F9] flex">
       <Sidebar
@@ -238,6 +281,22 @@ export default function App() {
                 <DiscoverView
                   queuedChannels={state.channels}
                   onAddChannel={handleAddChannel}
+                />
+              )}
+
+              {activeTab === 'drops' && (
+                <DropsEventsView
+                  bot={state.bot}
+                  channels={state.channels}
+                  platformEvents={state.platformEvents}
+                  eventsLastSyncedAt={state.eventsLastSyncedAt}
+                  activeChannelEventId={state.activeChannelEventId}
+                  campaigns={state.dropsCampaigns}
+                  dropsLastSyncedAt={state.dropsLastSyncedAt}
+                  onRefreshEvents={handleRefreshEvents}
+                  onEnqueueEvent={handleEnqueueEvent}
+                  onRefreshCampaigns={handleRefreshDrops}
+                  onEnqueueCampaign={handleEnqueueCampaign}
                 />
               )}
 

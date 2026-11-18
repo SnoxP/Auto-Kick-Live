@@ -1,4 +1,4 @@
-import { Compass, History, LogIn, LogOut, Menu, Radio, Tv, X } from 'lucide-react';
+import { Compass, Gift, History, LogIn, LogOut, Menu, Radio, Tv, X } from 'lucide-react';
 import type { KickUserSession, NavTab } from '../types/kick';
 
 interface SidebarProps {
@@ -16,6 +16,7 @@ interface SidebarProps {
 const NAV_ITEMS: Array<{ id: NavTab; label: string; icon: typeof Tv }> = [
   { id: 'watcher', label: 'Bot Watcher AFK', icon: Tv },
   { id: 'discover', label: 'Descobrir Lives', icon: Compass },
+  { id: 'drops', label: 'Eventos e Drops', icon: Gift },
   { id: 'broadcaster', label: 'Transmissor 24/7', icon: Radio },
   { id: 'history', label: 'Histórico', icon: History },
 ];

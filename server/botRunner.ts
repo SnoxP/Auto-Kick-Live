@@ -3,9 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   evaluateChatTrigger,
+  isChannelEligibleForCampaign,
+  isChannelInPlatformEvent,
   normalizeKickSlug,
   parseFfmpegProgressLine,
   selectNextAfkChannel,
+  sortPlatformEvents,
 } from '../src/lib/afkEngine.ts';
 import type {
   ActivityLogEntry,
@@ -14,9 +17,21 @@ import type {
   BroadcasterConfig,
   ChannelItem,
   ChatMessageItem,
+  DropCampaign,
+  KickEventStream,
+  KickPlatformEvent,
   KickUserSession,
 } from '../src/types/kick.ts';
-import { fetchKickChannel, fetchKickChatMessages, sendKickChatMessage } from './kickApi.ts';
+import {
+  fetchKickChannel,
+  fetchKickChannelEvent,
+  fetchKickChatMessages,
+  fetchKickDropsCampaigns,
+  fetchKickEventStreams,
+  fetchKickFeaturedStreams,
+  fetchKickPlatformEvents,
+  sendKickChatMessage,
+} from './kickApi.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
 const STATE_FILE = path.join(DATA_DIR, 'kickafk-state.json');
@@ -32,6 +47,8 @@ interface PersistedState {
   rules: AutoReplyRule[];
   bot: BotConfig;
   broadcaster: Omit<BroadcasterConfig, 'running' | 'startedAt' | 'framesEncoded' | 'currentFps' | 'currentBitrate' | 'elapsedSeconds' | 'lastError' | 'hasStreamKey'>;
+  campaignWatchedSeconds?: Record<string, number>;
+  eventWatchedSeconds?: Record<string, number>;
   logs: ActivityLogEntry[];
   user: KickUserSession | null;
 }
@@ -40,6 +57,14 @@ class KickAfkBotRunner {
   private channels: ChannelItem[] = [];
   private rules: AutoReplyRule[] = [];
   private chatMessages: ChatMessageItem[] = [];
+  private platformEvents: Array<Omit<KickPlatformEvent, 'watchedSeconds' | 'activeStreamSlugs'>> = [];
+  private eventsLastSyncedAt: string | null = null;
+  private eventWatchedSeconds: Record<string, number> = {};
+  private eventStreamSlugs: Record<string, string[]> = {};
+  private activeChannelEventId: string | null = null;
+  private dropsCampaigns: Omit<DropCampaign, 'watchedSeconds'>[] = [];
+  private dropsLastSyncedAt: string | null = null;
+  private campaignWatchedSeconds: Record<string, number> = {};
   private logs: ActivityLogEntry[] = [];
   private user: KickUserSession | null = null;
   private accessToken: string | null = null;
@@ -98,6 +123,13 @@ class KickAfkBotRunner {
 
     // Kick off initial background status sync without blocking server boot
     void this.refreshAllChannels().catch(() => undefined);
+    void this.refreshPlatformEvents().catch(() => undefined);
+    void this.refreshDropsCampaigns().catch(() => undefined);
+
+    setInterval(() => {
+      void this.refreshPlatformEvents().catch(() => undefined);
+      void this.refreshDropsCampaigns().catch(() => undefined);
+    }, 3 * 60 * 1000);
 
     if (this.bot.running) {
       this.startTimers();
@@ -137,6 +169,12 @@ class KickAfkBotRunner {
         }
         if (Array.isArray(parsed.logs)) {
           this.logs = parsed.logs.slice(0, 100);
+        }
+        if (parsed.campaignWatchedSeconds && typeof parsed.campaignWatchedSeconds === 'object') {
+          this.campaignWatchedSeconds = parsed.campaignWatchedSeconds;
+        }
+        if (parsed.eventWatchedSeconds && typeof parsed.eventWatchedSeconds === 'object') {
+          this.eventWatchedSeconds = parsed.eventWatchedSeconds;
         }
         if (parsed.user) {
           this.user = parsed.user;
@@ -252,6 +290,8 @@ class KickAfkBotRunner {
           bitrateKbps: this.broadcaster.bitrateKbps,
           rtmpUrl: this.broadcaster.rtmpUrl,
         },
+        campaignWatchedSeconds: this.campaignWatchedSeconds,
+        eventWatchedSeconds: this.eventWatchedSeconds,
         logs: this.logs.slice(0, 100),
         user: this.user,
       };
@@ -281,6 +321,14 @@ class KickAfkBotRunner {
   }
 
   public getSnapshot(oauthConfigured: boolean, callbackUrl: string) {
+    const eventsWithProgress = sortPlatformEvents(
+      this.platformEvents.map((ev) => ({
+        ...ev,
+        watchedSeconds: this.eventWatchedSeconds[ev.id] || 0,
+        activeStreamSlugs: this.eventStreamSlugs[ev.id] || [],
+      })),
+    );
+
     return {
       oauthConfigured,
       callbackUrl,
@@ -290,6 +338,14 @@ class KickAfkBotRunner {
       chatMessages: [...this.chatMessages],
       rules: [...this.rules],
       broadcaster: { ...this.broadcaster },
+      platformEvents: eventsWithProgress,
+      eventsLastSyncedAt: this.eventsLastSyncedAt,
+      activeChannelEventId: this.activeChannelEventId,
+      dropsCampaigns: this.dropsCampaigns.map((c) => ({
+        ...c,
+        watchedSeconds: this.campaignWatchedSeconds[c.id] || 0,
+      })),
+      dropsLastSyncedAt: this.dropsLastSyncedAt,
       logs: [...this.logs],
     };
   }
@@ -522,10 +578,29 @@ class KickAfkBotRunner {
         return;
       }
       this.bot.totalSessionSeconds += 1;
+
       if (this.bot.activeSlug) {
         const active = this.channels.find((c) => c.slug === this.bot.activeSlug);
         if (active && active.isLive) {
           active.watchedSeconds += 1;
+
+          for (const camp of this.dropsCampaigns) {
+            if (isChannelEligibleForCampaign(active, camp)) {
+              this.campaignWatchedSeconds[camp.id] =
+                (this.campaignWatchedSeconds[camp.id] || 0) + 1;
+            }
+          }
+
+          for (const ev of this.platformEvents) {
+            const withSlugs = {
+              ...ev,
+              activeStreamSlugs: this.eventStreamSlugs[ev.id] || [],
+            };
+            if (isChannelInPlatformEvent(active, withSlugs, this.activeChannelEventId)) {
+              this.eventWatchedSeconds[ev.id] =
+                (this.eventWatchedSeconds[ev.id] || 0) + 1;
+            }
+          }
         }
       }
     }, 1000);
@@ -550,6 +625,19 @@ class KickAfkBotRunner {
 
   private activateChannel(channel: ChannelItem): void {
     this.bot.activeSlug = channel.slug;
+    this.activeChannelEventId = null;
+
+    if (channel.channelId && channel.isLive) {
+      const targetSlug = channel.slug;
+      void fetchKickChannelEvent(channel.channelId)
+        .then((eventId) => {
+          if (this.bot.activeSlug === targetSlug) {
+            this.activeChannelEventId = eventId;
+          }
+        })
+        .catch(() => undefined);
+    }
+
     if (channel.channelId) {
       this.connectChatWs(channel);
     } else {
@@ -910,6 +998,143 @@ class KickAfkBotRunner {
     } else {
       this.broadcaster.running = false;
     }
+  }
+
+  public async refreshPlatformEvents(): Promise<void> {
+    const events = await fetchKickPlatformEvents();
+    this.platformEvents = events;
+    this.eventsLastSyncedAt = new Date().toISOString();
+
+    // Pre-fetch active streams for top live events that currently have broadcasts
+    const topLiveWithStreams = events
+      .filter((e) => e.phase === 'live' && e.numLivestreams > 0)
+      .slice(0, 6);
+    await Promise.allSettled(
+      topLiveWithStreams.map(async (ev) => {
+        const streams = await fetchKickEventStreams(ev.id);
+        this.eventStreamSlugs[ev.id] = streams.map((s) => s.slug);
+      }),
+    );
+  }
+
+  public async getEventStreams(eventId: string): Promise<KickEventStream[]> {
+    const streams = await fetchKickEventStreams(eventId);
+    this.eventStreamSlugs[eventId] = streams.map((s) => s.slug);
+    return streams;
+  }
+
+  public async enqueuePlatformEvent(eventId: string, preferredSlug?: string): Promise<ChannelItem> {
+    if (this.platformEvents.length === 0) {
+      await this.refreshPlatformEvents();
+    }
+    const ev = this.platformEvents.find((e) => e.id === eventId || e.slug === eventId);
+    if (!ev) {
+      throw new Error('Evento da Kick não encontrado.');
+    }
+
+    const streams = await this.getEventStreams(ev.id);
+    let chosenSlug = preferredSlug ? normalizeKickSlug(preferredSlug) : null;
+
+    if (!chosenSlug && streams.length > 0) {
+      chosenSlug = streams[0].slug;
+    }
+
+    if (!chosenSlug && ev.categoryName) {
+      const [pt, en] = await Promise.allSettled([
+        fetchKickFeaturedStreams('pt'),
+        fetchKickFeaturedStreams('en'),
+      ]);
+      const combined = [
+        ...(pt.status === 'fulfilled' ? pt.value : []),
+        ...(en.status === 'fulfilled' ? en.value : []),
+      ];
+      const catTarget = ev.categoryName.trim().toLowerCase();
+      const matched = combined.find((s) => s.category.trim().toLowerCase() === catTarget);
+      if (matched) {
+        chosenSlug = matched.slug;
+      }
+    }
+
+    if (!chosenSlug) {
+      throw new Error(`Nenhuma transmissão ao vivo ativa no momento para "${ev.title}".`);
+    }
+
+    const channel = await this.addChannel(chosenSlug);
+    this.moveChannelPriority(channel.slug, 'watch-now');
+    this.activeChannelEventId = ev.id;
+    this.addLog(
+      'drops',
+      'success',
+      `Canal ${channel.displayName} sintonizado para o evento "${ev.title}".`,
+      channel.slug,
+    );
+    this.saveState();
+    return channel;
+  }
+
+  public async refreshDropsCampaigns(): Promise<void> {
+    const campaigns = await fetchKickDropsCampaigns();
+    this.dropsCampaigns = campaigns;
+    this.dropsLastSyncedAt = new Date().toISOString();
+  }
+
+  public async enqueueCampaignChannel(campaignId: string): Promise<ChannelItem> {
+    if (this.dropsCampaigns.length === 0) {
+      await this.refreshDropsCampaigns();
+    }
+    const campaign = this.dropsCampaigns.find((c) => c.id === campaignId);
+    if (!campaign) {
+      throw new Error('Campanha de drops não encontrada.');
+    }
+
+    let chosenSlug: string | null = null;
+
+    if (campaign.channelSlugs.length > 0) {
+      // Check first 8 candidate channels in parallel for an online stream
+      const candidates = campaign.channelSlugs.slice(0, 8);
+      const checks = await Promise.allSettled(candidates.map((slug) => fetchKickChannel(slug)));
+      for (const res of checks) {
+        if (res.status === 'fulfilled' && res.value.isLive) {
+          chosenSlug = res.value.slug;
+          break;
+        }
+      }
+      if (!chosenSlug) {
+        chosenSlug = campaign.channelSlugs[0];
+      }
+    } else {
+      // Category-wide campaign: look up live featured streams in PT or EN matching the category
+      const [pt, en] = await Promise.allSettled([
+        fetchKickFeaturedStreams('pt'),
+        fetchKickFeaturedStreams('en'),
+      ]);
+      const combined = [
+        ...(pt.status === 'fulfilled' ? pt.value : []),
+        ...(en.status === 'fulfilled' ? en.value : []),
+      ];
+      const catTarget = campaign.categoryName.trim().toLowerCase();
+      const matched = combined.find((s) => s.category.trim().toLowerCase() === catTarget);
+      if (matched) {
+        chosenSlug = matched.slug;
+      }
+    }
+
+    if (!chosenSlug) {
+      throw new Error(
+        `Nenhuma live ao vivo encontrada agora para "${campaign.categoryName}". Adicione um canal dessa categoria manualmente na fila.`,
+      );
+    }
+
+    const channel = await this.addChannel(chosenSlug);
+    this.moveChannelPriority(channel.slug, 'watch-now');
+    this.addLog(
+      'drops',
+      'success',
+      `Canal ${channel.displayName} sintonizado para a campanha "${campaign.name}".`,
+      channel.slug,
+    );
+    this.saveState();
+    return channel;
   }
 
   public clearLogs(): void {

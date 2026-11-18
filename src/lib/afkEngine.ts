@@ -1,4 +1,11 @@
-import type { AutoReplyRule, ChannelItem, FailoverMode } from '../types/kick';
+import type {
+  AutoReplyRule,
+  ChannelItem,
+  DropCampaign,
+  DropReward,
+  FailoverMode,
+  KickPlatformEvent,
+} from '../types/kick';
 
 /**
  * Extracts and normalizes a Kick channel slug from a username, @handle, or URL.
@@ -177,4 +184,108 @@ export function parseFfmpegProgressLine(line: string): {
     fps: fpsMatch ? Number(fpsMatch[1]) : undefined,
     bitrate: bitrateMatch ? bitrateMatch[1] : undefined,
   };
+}
+
+/**
+ * Checks whether a live channel qualifies for progress on a Kick Drop campaign.
+ */
+export function isChannelEligibleForCampaign(
+  channel: Pick<ChannelItem, 'slug' | 'category' | 'isLive'> | null | undefined,
+  campaign: Pick<DropCampaign, 'status' | 'categoryName' | 'categorySlug' | 'channelSlugs'>,
+): boolean {
+  if (!channel || !channel.isLive || campaign.status !== 'active') {
+    return false;
+  }
+
+  const normalizedSlug = channel.slug.trim().toLowerCase();
+  if (campaign.channelSlugs.length > 0) {
+    return campaign.channelSlugs.some((s) => s.trim().toLowerCase() === normalizedSlug);
+  }
+
+  // Category-wide campaign: match by normalized category name or slug
+  const chCat = channel.category.trim().toLowerCase();
+  const campCat = campaign.categoryName.trim().toLowerCase();
+  const campSlug = campaign.categorySlug.trim().toLowerCase().replace(/-/g, ' ');
+  return Boolean(chCat && (chCat === campCat || chCat === campSlug));
+}
+
+/**
+ * Computes real-time reward completion percentages from accumulated AFK watch seconds.
+ */
+export function computeCampaignProgress(watchedSeconds: number, rewards: DropReward[]): {
+  completedCount: number;
+  totalCount: number;
+  overallPercent: number;
+  rewardProgress: Array<{
+    id: string;
+    earnedMinutes: number;
+    requiredMinutes: number;
+    percent: number;
+    completed: boolean;
+  }>;
+} {
+  const safeSeconds = Math.max(0, watchedSeconds);
+  const earnedMinutesExact = safeSeconds / 60;
+
+  const rewardProgress = rewards.map((r) => {
+    const required = Math.max(1, r.requiredMinutes);
+    const earned = Math.min(required, Number(earnedMinutesExact.toFixed(1)));
+    const percent = Math.min(100, Math.round((earnedMinutesExact / required) * 100));
+    return {
+      id: r.id,
+      earnedMinutes: earned,
+      requiredMinutes: required,
+      percent,
+      completed: earnedMinutesExact >= required,
+    };
+  });
+
+  const completedCount = rewardProgress.filter((r) => r.completed).length;
+  const maxRequired = rewards.reduce((max, r) => Math.max(max, r.requiredMinutes), 0);
+  const overallPercent =
+    maxRequired > 0 ? Math.min(100, Math.round((earnedMinutesExact / maxRequired) * 100)) : 0;
+
+  return {
+    completedCount,
+    totalCount: rewards.length,
+    overallPercent,
+    rewardProgress,
+  };
+}
+
+/**
+ * Checks whether a live channel is currently broadcasting for a Kick platform event.
+ */
+export function isChannelInPlatformEvent(
+  channel: Pick<ChannelItem, 'slug' | 'isLive'> | null | undefined,
+  event: Pick<KickPlatformEvent, 'id' | 'phase' | 'activeStreamSlugs'>,
+  activeChannelEventId: string | null,
+): boolean {
+  if (!channel || !channel.isLive || event.phase !== 'live') {
+    return false;
+  }
+  if (activeChannelEventId && activeChannelEventId === event.id) {
+    return true;
+  }
+  const normalizedSlug = channel.slug.trim().toLowerCase();
+  return event.activeStreamSlugs.some((s) => s.trim().toLowerCase() === normalizedSlug);
+}
+
+/**
+ * Sorts Kick platform events by phase (live -> pre -> post), active streams count, and viewers.
+ */
+export function sortPlatformEvents<T extends Pick<KickPlatformEvent, 'phase' | 'numLivestreams' | 'viewCount'>>(
+  events: T[],
+): T[] {
+  const phaseOrder: Record<KickPlatformEvent['phase'], number> = {
+    live: 0,
+    pre: 1,
+    post: 2,
+  };
+  return [...events].sort((a, b) => {
+    const pDiff = phaseOrder[a.phase] - phaseOrder[b.phase];
+    if (pDiff !== 0) return pDiff;
+    if (b.numLivestreams !== a.numLivestreams) return b.numLivestreams - a.numLivestreams;
+    return b.viewCount - a.viewCount;
+  });
 }

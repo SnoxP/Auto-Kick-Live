@@ -14,6 +14,7 @@ const CATEGORY_LABELS: Record<CategoryFilter, string> = {
   watcher: 'Watcher',
   failover: 'Failover',
   chat: 'Chat',
+  drops: 'Eventos/Drops',
   oauth: 'Conta Kick',
   broadcaster: 'Transmissor',
 };

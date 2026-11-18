@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  computeCampaignProgress,
   evaluateChatTrigger,
   formatAfkDuration,
+  isChannelEligibleForCampaign,
+  isChannelInPlatformEvent,
   normalizeKickSlug,
   parseFfmpegProgressLine,
   selectNextAfkChannel,
+  sortPlatformEvents,
 } from './afkEngine';
 import type { AutoReplyRule, ChannelItem } from '../types/kick';
 
@@ -123,4 +127,89 @@ test('parseFfmpegProgressLine extracts frame, fps, and bitrate telemetry', () =>
     bitrate: '699.1kbits/s',
   });
   assert.equal(parseFfmpegProgressLine('Stream mapping:'), null);
+});
+
+test('isChannelEligibleForCampaign matches specific channel lists and category-wide campaigns', () => {
+  const csCampaign = {
+    status: 'active' as const,
+    categoryName: 'Counter-Strike 2',
+    categorySlug: 'counter-strike-2',
+    channelSlugs: ['gaill1nh0', 'michel'],
+  };
+  const catWideCampaign = {
+    status: 'active' as const,
+    categoryName: 'Return Of The King',
+    categorySlug: 'return-of-the-king',
+    channelSlugs: [],
+  };
+
+  assert.equal(
+    isChannelEligibleForCampaign({ slug: 'michel', category: 'Counter-Strike 2', isLive: true }, csCampaign),
+    true,
+  );
+  assert.equal(
+    isChannelEligibleForCampaign({ slug: 'gaules', category: 'Counter-Strike 2', isLive: true }, csCampaign),
+    false,
+  );
+  assert.equal(
+    isChannelEligibleForCampaign({ slug: 'michel', category: 'Counter-Strike 2', isLive: false }, csCampaign),
+    false,
+  );
+  assert.equal(
+    isChannelEligibleForCampaign({ slug: 'anyone', category: 'Return Of The King', isLive: true }, catWideCampaign),
+    true,
+  );
+});
+
+test('computeCampaignProgress computes percentages and reward completion from watchedSeconds', () => {
+  const rewards = [
+    { id: 'r1', name: '1h Ticket', imageUrl: null, requiredMinutes: 60 },
+    { id: 'r2', name: '2h Ticket', imageUrl: null, requiredMinutes: 120 },
+  ];
+
+  // 90 minutes = 5400 seconds -> r1 completed (100%), r2 at 75%
+  const progress = computeCampaignProgress(5400, rewards);
+  assert.equal(progress.completedCount, 1);
+  assert.equal(progress.totalCount, 2);
+  assert.equal(progress.overallPercent, 75);
+  assert.equal(progress.rewardProgress[0].completed, true);
+  assert.equal(progress.rewardProgress[1].percent, 75);
+});
+
+test('isChannelInPlatformEvent detects participation via channel event ID or stream slug', () => {
+  const liveEvent = {
+    id: 'ev-1',
+    phase: 'live' as const,
+    activeStreamSlugs: ['n3on', 'jonvlogs'],
+  };
+
+  assert.equal(
+    isChannelInPlatformEvent({ slug: 'jonvlogs', isLive: true }, liveEvent, null),
+    true,
+  );
+  assert.equal(
+    isChannelInPlatformEvent({ slug: 'esportsawards', isLive: true }, liveEvent, 'ev-1'),
+    true,
+  );
+  assert.equal(
+    isChannelInPlatformEvent({ slug: 'gaules', isLive: true }, liveEvent, null),
+    false,
+  );
+  assert.equal(
+    isChannelInPlatformEvent({ slug: 'jonvlogs', isLive: false }, liveEvent, 'ev-1'),
+    false,
+  );
+});
+
+test('sortPlatformEvents prioritizes live events with active streams and highest viewers', () => {
+  const sorted = sortPlatformEvents([
+    { id: '1', phase: 'post' as const, numLivestreams: 5, viewCount: 99999 },
+    { id: '2', phase: 'live' as const, numLivestreams: 0, viewCount: 0 },
+    { id: '3', phase: 'pre' as const, numLivestreams: 0, viewCount: 0 },
+    { id: '4', phase: 'live' as const, numLivestreams: 6, viewCount: 35000 },
+  ]);
+  assert.deepEqual(
+    sorted.map((e) => e.id),
+    ['4', '2', '3', '1'],
+  );
 });

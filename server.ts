@@ -410,6 +410,73 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  app.post('/api/drops/refresh', async (_req: Request, res: Response) => {
+    try {
+      await botRunner.refreshDropsCampaigns();
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Erro ao atualizar campanhas da Kick.',
+      });
+    }
+  });
+
+  app.post('/api/drops/:id/enqueue', async (req: Request, res: Response) => {
+    try {
+      const channel = await botRunner.enqueueCampaignChannel(String(req.params.id || ''));
+      res.json({ ok: true, channel });
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Não foi possível sintonizar canal elegível da campanha.',
+      });
+    }
+  });
+
+  app.post('/api/events/refresh', async (_req: Request, res: Response) => {
+    try {
+      await botRunner.refreshPlatformEvents();
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Erro ao atualizar eventos da Kick.',
+      });
+    }
+  });
+
+  app.get('/api/events/:id/streams', async (req: Request, res: Response) => {
+    try {
+      const streams = await botRunner.getEventStreams(String(req.params.id || ''));
+      res.json({ streams });
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Erro ao buscar lives do evento.',
+        streams: [],
+      });
+    }
+  });
+
+  app.post('/api/events/:id/enqueue', async (req: Request, res: Response) => {
+    try {
+      const preferredSlug =
+        typeof req.body?.slug === 'string' ? req.body.slug : undefined;
+      const channel = await botRunner.enqueuePlatformEvent(
+        String(req.params.id || ''),
+        preferredSlug,
+      );
+      res.json({ ok: true, channel });
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Não foi possível sintonizar canal do evento.',
+      });
+    }
+  });
+
   app.delete('/api/logs', (_req: Request, res: Response) => {
     botRunner.clearLogs();
     res.json({ ok: true });

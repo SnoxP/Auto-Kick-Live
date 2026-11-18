@@ -1,4 +1,4 @@
-export type NavTab = 'watcher' | 'discover' | 'broadcaster' | 'history';
+export type NavTab = 'watcher' | 'discover' | 'drops' | 'broadcaster' | 'history';
 
 export type FailoverMode = 'priority' | 'round-robin';
 
@@ -82,10 +82,64 @@ export interface BroadcasterConfig {
   lastError: string | null;
 }
 
+export interface DropReward {
+  id: string;
+  name: string;
+  imageUrl: string | null;
+  requiredMinutes: number;
+}
+
+export interface DropCampaign {
+  id: string;
+  name: string;
+  status: 'active' | 'upcoming' | 'expired';
+  categoryName: string;
+  categorySlug: string;
+  categoryImageUrl: string | null;
+  organizationName: string;
+  organizationLogoUrl: string | null;
+  startsAt: string;
+  endsAt: string;
+  connectUrl: string | null;
+  channelSlugs: string[];
+  rewards: DropReward[];
+  watchedSeconds: number;
+}
+
+export interface KickEventStream {
+  channelId: number;
+  slug: string;
+  username: string;
+  profilePic: string | null;
+  title: string;
+  viewerCount: number;
+  language: string;
+  thumbnailUrl: string | null;
+}
+
+export interface KickPlatformEvent {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  phase: 'live' | 'pre' | 'post';
+  categoryName: string;
+  categorySlug: string;
+  startTime: string;
+  endTime: string | null;
+  numLivestreams: number;
+  viewCount: number;
+  thumbnailUrl: string | null;
+  bannerUrl: string | null;
+  languages: string[];
+  watchedSeconds: number;
+  activeStreamSlugs: string[];
+}
+
 export interface ActivityLogEntry {
   id: string;
   timestamp: string;
-  category: 'watcher' | 'failover' | 'chat' | 'oauth' | 'broadcaster';
+  category: 'watcher' | 'failover' | 'chat' | 'oauth' | 'broadcaster' | 'drops';
   level: 'info' | 'success' | 'warning' | 'error';
   message: string;
   channelSlug?: string;
@@ -100,6 +154,11 @@ export interface AppStatePayload {
   chatMessages: ChatMessageItem[];
   rules: AutoReplyRule[];
   broadcaster: BroadcasterConfig;
+  platformEvents: KickPlatformEvent[];
+  eventsLastSyncedAt: string | null;
+  activeChannelEventId: string | null;
+  dropsCampaigns: DropCampaign[];
+  dropsLastSyncedAt: string | null;
   logs: ActivityLogEntry[];
 }
 

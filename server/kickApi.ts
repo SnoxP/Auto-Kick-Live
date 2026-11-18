@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { FeaturedStream } from '../src/types/kick.ts';
+import type { FeaturedStream, KickEventStream, KickPlatformEvent } from '../src/types/kick.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -265,4 +265,209 @@ export async function fetchKickChatMessages(channelId: number): Promise<RawKickC
       senderColor: m.sender?.identity?.color || '#53FC18',
     }));
 }
+
+export async function fetchKickDropsCampaigns(): Promise<
+  Array<{
+    id: string;
+    name: string;
+    status: 'active' | 'upcoming' | 'expired';
+    categoryName: string;
+    categorySlug: string;
+    categoryImageUrl: string | null;
+    organizationName: string;
+    organizationLogoUrl: string | null;
+    startsAt: string;
+    endsAt: string;
+    connectUrl: string | null;
+    channelSlugs: string[];
+    rewards: Array<{
+      id: string;
+      name: string;
+      imageUrl: string | null;
+      requiredMinutes: number;
+    }>;
+  }>
+> {
+  const { status, data } = await curlGetJson<{
+    data?: Array<{
+      id?: string;
+      name?: string;
+      status?: string;
+      starts_at?: string;
+      ends_at?: string;
+      connect_url?: string | null;
+      category?: {
+        name?: string;
+        slug?: string;
+        image_url?: string | null;
+      };
+      organization?: {
+        name?: string;
+        logo_url?: string | null;
+      };
+      channels?: Array<{ slug?: string }>;
+      rewards?: Array<{
+        id?: string;
+        name?: string;
+        image_url?: string | null;
+        required_units?: number;
+      }>;
+    }>;
+  }>('https://web.kick.com/api/v1/drops/campaigns');
+
+  if (status < 200 || status >= 300 || !data?.data) {
+    throw new Error(`Kick Drops API retornou HTTP ${status || 'erro de rede'}.`);
+  }
+
+  return data.data
+    .filter((c) => Boolean(c.id && c.name))
+    .map((c) => {
+      const normalizedStatus =
+        c.status === 'active'
+          ? 'active'
+          : c.status === 'upcoming'
+            ? 'upcoming'
+            : 'expired';
+
+      return {
+        id: String(c.id),
+        name: String(c.name).trim(),
+        status: normalizedStatus,
+        categoryName: c.category?.name || 'Geral',
+        categorySlug: c.category?.slug || '',
+        categoryImageUrl: c.category?.image_url || null,
+        organizationName: c.organization?.name || 'Kick',
+        organizationLogoUrl: c.organization?.logo_url || null,
+        startsAt: c.starts_at || '',
+        endsAt: c.ends_at || '',
+        connectUrl: c.connect_url || null,
+        channelSlugs: (c.channels || [])
+          .map((ch) => ch.slug?.trim().toLowerCase())
+          .filter((s): s is string => Boolean(s)),
+        rewards: (c.rewards || []).map((r) => {
+          const rawImg = r.image_url || '';
+          const fullImg = rawImg
+            ? rawImg.startsWith('http')
+              ? rawImg
+              : `https://ext.cdn.kick.com/${rawImg.replace(/^\/+/, '')}`
+            : null;
+          return {
+            id: String(r.id || Math.random()),
+            name: r.name || 'Recompensa',
+            imageUrl: fullImg,
+            requiredMinutes: typeof r.required_units === 'number' ? r.required_units : 60,
+          };
+        }),
+      };
+    });
+}
+
+interface RawKickEvent {
+  id?: string;
+  slug?: string;
+  title?: string;
+  description?: string;
+  phase?: string;
+  is_draft?: boolean;
+  start_time?: string;
+  end_time?: string | null;
+  num_livestreams?: number;
+  view_count?: number;
+  languages?: string[];
+  category?: {
+    name?: string;
+    slug?: string;
+  };
+  assets?: {
+    thumbnail?: string | null;
+    promo_poster?: string | null;
+    banner?: string | null;
+    promo_banner?: string | null;
+  };
+}
+
+export async function fetchKickPlatformEvents(): Promise<
+  Array<Omit<KickPlatformEvent, 'watchedSeconds' | 'activeStreamSlugs'>>
+> {
+  const { status, data } = await curlGetJson<{
+    data?: {
+      events?: RawKickEvent[];
+    };
+  }>('https://web.kick.com/api/v1/events/browse');
+
+  if (status < 200 || status >= 300 || !data?.data?.events) {
+    throw new Error(`Kick Events API retornou HTTP ${status || 'erro de rede'}.`);
+  }
+
+  return data.data.events
+    .filter((e) => Boolean(e.id && e.title && !e.is_draft))
+    .map((e) => {
+      const phase: KickPlatformEvent['phase'] =
+        e.phase === 'live' ? 'live' : e.phase === 'pre' ? 'pre' : 'post';
+
+      return {
+        id: String(e.id),
+        slug: String(e.slug || e.id),
+        title: String(e.title).trim(),
+        description: String(e.description || '').trim(),
+        phase,
+        categoryName: e.category?.name || 'Special Events',
+        categorySlug: e.category?.slug || 'special-events',
+        startTime: e.start_time || '',
+        endTime: e.end_time || null,
+        numLivestreams: typeof e.num_livestreams === 'number' ? e.num_livestreams : 0,
+        viewCount: typeof e.view_count === 'number' ? e.view_count : 0,
+        thumbnailUrl: e.assets?.thumbnail || e.assets?.promo_poster || null,
+        bannerUrl: e.assets?.promo_banner || e.assets?.banner || null,
+        languages: Array.isArray(e.languages) ? e.languages : [],
+      };
+    });
+}
+
+export async function fetchKickEventStreams(eventIdOrSlug: string): Promise<KickEventStream[]> {
+  const { status, data } = await curlGetJson<{
+    data?: {
+      streams?: Array<{
+        channel?: { id?: number; slug?: string };
+        user?: { username?: string; profile_picture_url?: string | null };
+        livestream?: {
+          title?: string;
+          view_count?: number;
+          language?: string;
+          thumbnail?: { src?: string | null };
+        };
+      }>;
+    };
+  }>(`https://web.kick.com/api/v1/events/${encodeURIComponent(eventIdOrSlug)}/streams`);
+
+  if (status < 200 || status >= 300 || !data?.data?.streams) {
+    return [];
+  }
+
+  return data.data.streams
+    .filter((s) => Boolean(s.channel?.slug))
+    .map((s) => ({
+      channelId: typeof s.channel?.id === 'number' ? s.channel.id : 0,
+      slug: String(s.channel?.slug || '').toLowerCase(),
+      username: s.user?.username || String(s.channel?.slug || ''),
+      profilePic: s.user?.profile_picture_url || null,
+      title: s.livestream?.title || 'Ao vivo no evento Kick',
+      viewerCount: typeof s.livestream?.view_count === 'number' ? s.livestream.view_count : 0,
+      language: s.livestream?.language || 'en',
+      thumbnailUrl: s.livestream?.thumbnail?.src || null,
+    }))
+    .sort((a, b) => b.viewerCount - a.viewerCount);
+}
+
+export async function fetchKickChannelEvent(channelId: number): Promise<string | null> {
+  const { status, data } = await curlGetJson<{
+    data?: { id?: string; phase?: string } | null;
+  }>(`https://web.kick.com/api/v1/channels/${channelId}/event`);
+
+  if (status < 200 || status >= 300 || !data?.data?.id) {
+    return null;
+  }
+  return data.data.phase === 'live' ? String(data.data.id) : null;
+}
+
 
